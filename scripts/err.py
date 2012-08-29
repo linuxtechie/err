@@ -27,7 +27,7 @@ if not ON_WINDOWS:
     from pwd import getpwnam
     from grp import getgrnam
 
-logging.basicConfig(format='%(levelname)s:%(message)s')
+logging.basicConfig(format='%(asctime)s (%(threadName)s) %(levelname)s:%(message)s')
 logger = logging.getLogger('')
 logger.setLevel(logging.INFO)
 
