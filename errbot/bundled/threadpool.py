@@ -31,6 +31,8 @@ See the end of the module code for a brief, annotated usage example.
 Website : http://chrisarndt.de/projects/threadpool/
 
 """
+import logging
+
 __docformat__ = "restructuredtext en"
 
 __all__ = [
@@ -156,6 +158,7 @@ class WorkerThread(threading.Thread):
                     result = request.callable(*request.args, **request.kwds)
                     self._results_queue.put((request, result))
                 except:
+                    logging.exception('Command failed')
                     request.exception = True
                     self._results_queue.put((request, sys.exc_info()))
 
@@ -264,7 +267,7 @@ class ThreadPool:
         """
         for i in range(num_workers):
             self.workers.append(WorkerThread(self._requests_queue,
-                self._results_queue, poll_timeout=poll_timeout))
+                self._results_queue, poll_timeout=poll_timeout, name='ThreadPool worker %i'%i))
 
     def dismissWorkers(self, num_workers, do_join=False):
         """Tell num_workers worker threads to quit after their current task."""

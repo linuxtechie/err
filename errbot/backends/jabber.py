@@ -30,7 +30,9 @@ bot's operation completely. MUCs are also supported.
 
 import os
 from pyexpat import ExpatError
+import select
 from xmpp import Client, NS_DELAY, JID, dispatcher, simplexml, Protocol, Node
+import xmpp
 from xmpp.client import DBG_CLIENT
 from xmpp.protocol import NS_CAPS, Iq, Message, NS_PUBSUB
 from xmpp.simplexml import XML2Node
@@ -534,11 +536,22 @@ class JabberBot(ErrBot):
                     if conn:
                         try:
                             conn.Process(1)
-                            if self.conn == None:
+                            if self.conn is None:
                                 self.disconnect_callback() # notify that the connection is lost
                                 conn = None
-                        except Exception:
-                            logging.exception("conn.Process exception")
+                        except Exception as e:
+                            if isinstance(e, KeyboardInterrupt): # don't prevent the bot to shutdown normally !
+                                raise
+                            elif isinstance(e, select.error) and e.args[0] == 4: # 'Interrupted system call'
+                                self.log.info('Interrupted system call detected on socket. shutting down.')
+                                break
+                            elif isinstance(e, xmpp.protocol.SeeOtherHost): # it means reconnect, here I disconnect to select another host automatically
+                                logging.info("xmpp.protocol.SeeOtherHost received, trying to reconnect to another host")
+                                self.conn = None
+                                conn = None
+                                self.disconnect_callback() # notify that the connection is lost
+                            else:
+                                logging.exception("conn.Process Generated exception %s" % e.__class__)
                         self.idle_proc()
                     else:
                         self.log.warn('Connection lost, retry to connect in %i seconds.' % self.RETRY_FREQUENCY)
