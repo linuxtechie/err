@@ -42,7 +42,7 @@ if not ON_WINDOWS:
     import code, traceback, signal
     signal.signal(signal.SIGUSR1, debug)  # Register handler for debugging
 
-logging.basicConfig(format='%(levelname)s:%(message)s')
+logging.basicConfig(format='%(asctime)s (%(threadName)s) %(levelname)s:%(message)s')
 logger = logging.getLogger('')
 logger.setLevel(logging.INFO)
 
