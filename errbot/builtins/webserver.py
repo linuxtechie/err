@@ -19,8 +19,6 @@ from errbot.utils import mess_2_embeddablehtml
 from errbot.version import VERSION
 from errbot.plugin_manager import get_all_active_plugin_objects
 from errbot.bundled.exrex import generate
-from errbot.backends.base import Identifier
-
 
 OK = Response()
 
@@ -88,6 +86,7 @@ class Webserver(BotPlugin):
             host = self.config['HOST']
             port = self.config['PORT']
             logging.info('Starting the webserver on %s:%i' % (host, port))
+            holder.flask_app = Flask('errbot')
 
             if self.webchat_mode:
                 # EVERYTHING NEEDS TO BE IN THE SAME THREAD OTHERWISE Socket.IO barfs
@@ -142,6 +141,16 @@ class Webserver(BotPlugin):
                 self.server = ThreadedWSGIServer(host, port, holder.flask_app)
             self.server.serve_forever()
             logging.debug('Webserver stopped')
+        except KeyboardInterrupt as ki:
+            logging.exception('Keyboard interrupt, request a global shutdown.')
+            if isinstance(self.server, ThreadedWSGIServer):
+               logging.info('webserver is ThreadedWSGIServer')
+               self.server.shutdown()
+            else:
+               logging.info('webserver is SocketIOServer')
+               self.server.kill()
+            self.server = None
+            holder.bot.shutdown()
         except Exception as e:
             logging.exception('The webserver exploded.')
 
@@ -163,18 +172,21 @@ class Webserver(BotPlugin):
         self.webserver_thread.start()
         super(Webserver, self).activate()
 
+    def shutdown(self):
+        if isinstance(self.server, ThreadedWSGIServer):
+            logging.info('webserver is ThreadedWSGIServer')
+            self.server.shutdown()
+            logging.info('Waiting for the webserver to terminate...')
+            self.webserver_thread.join()
+            logging.info('Webserver thread died as expected.')
+        else:
+            logging.info('webserver is SocketIOServer')
+            self.server.kill() # it kills it but doesn't free the thread, I have to let it leak. [reported upstream]
+
     def deactivate(self):
         logging.debug('Sending signal to stop the webserver')
         if self.server:
-            if isinstance(self.server, ThreadedWSGIServer):
-                logging.info('webserver is ThreadedWSGIServer')
-                self.server.shutdown()
-                logging.info('Waiting for the webserver to terminate...')
-                self.webserver_thread.join()
-                logging.info('Webserver thread died as expected.')
-            else:
-                logging.info('webserver is SocketIOServer')
-                self.server.kill() # it kills it but doesn't free the thread, I have to let it leak. [reported upstream]
+            self.shutdown()
         self.webserver_thread = None
         self.server = None
         super(Webserver, self).deactivate()
