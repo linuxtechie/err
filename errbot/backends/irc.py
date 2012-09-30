@@ -34,7 +34,10 @@ class IRCConnection(IRCClient, object):
 
     def send_message(self, mess):
         if self.connected:
-            self.msg(mess.getTo(), utf8(mess.getBody()))
+            m = utf8(mess.getBody())
+            if m[-1] != '\n':
+                m+='\n'
+            self.msg(mess.getTo().node, m)
         else:
             logging.debug("Zapped message because the backend is not connected yet %s" % mess.getBody())
 
@@ -52,7 +55,7 @@ class IRCConnection(IRCClient, object):
             typ = 'groupchat'
         logging.debug('IRC message received from %s [%s]' % (fr, line))
         msg = Message(line, typ=typ)
-        msg.setFrom(fr + '@' + prefix)
+        msg.setFrom(fr) # already a compatible format
         self.callback.callback_message(self, msg)
 
 
@@ -107,7 +110,7 @@ class IRCBackend(ErrBot):
 
     def connect(self):
         if not self.conn:
-            ircFactory = IRCFactory(self, self.jid)
+            ircFactory = IRCFactory(self, self.jid.split('@')[0])
             self.conn = ircFactory.irc
             reactor.connectTCP(self.server, self.port, ircFactory)
 
