@@ -8,6 +8,11 @@ BOT_LOG_LEVEL = logging.INFO
 # set the log file, None = console only, be sure the user of the bot can write there
 BOT_LOG_FILE = '/var/log/err/err.log'
 
+# Enable logging to sentry (find out more about sentry at www.getsentry.com).
+BOT_LOG_SENTRY = False
+SENTRY_DSN = ''
+SENTRY_LOGLEVEL = BOT_LOG_LEVEL
+
 # Base configuration (Jabber mode)
 BOT_IDENTITY = {
     'username' : 'err@localhost', # JID of the user you have created for the bot
@@ -35,7 +40,8 @@ BOT_ASYNC = False # If true, the bot will handle the commands asynchronously [EX
 #    'nickname' : 'err-chatbot',
 #    'password' : None, # optional
 #    'server' : 'irc.freenode.net',
-#    'port': 6667 # optional
+#    'port': 6667, # optional
+#    'ssl': False,  # optional
 #}
 
 BOT_ADMINS = ('gbin@localhost',) # only those JIDs will have access to admin commands
@@ -50,6 +56,22 @@ BOT_EXTRA_PLUGIN_DIR = None # Add this directory to the plugin discovery (useful
 # default '!'. If the prefix is changed from the default, the help strings will
 # be automatically adjusted.
 BOT_PREFIX = '!'
+
+# Access controls, allowing commands to be restricted to specific users/rooms.
+# Available filters (you can omit a filter or set it to None to disable it):
+#   allowusers: Allow command from these users only
+#   denyusers: Deny command from these users
+#   allowrooms: Allow command only in these rooms (and direct messages)
+#   denyrooms: Deny command in these rooms
+#   allowprivate: Allow command from direct messages to the bot
+#   allowmuc: Allow command inside rooms
+# Example:
+#ACCESS_CONTROLS = {'status': {'allowrooms': ('someroom@conference.localhost',)},
+#                   'about': {'denyusers': ('baduser@localhost',), 'allowrooms': ('room1@conference.localhost', 'room2@conference.localhost')},
+#                   'uptime': {'allowusers': BOT_ADMINS},
+#                   'help': {'allowmuc': False},
+#                  }
+ACCESS_CONTROLS = {}
 
 # ---- Chatrooms configuration (used by the chatroom plugin)
 # it is a standard python file so you can reuse variables...
@@ -77,4 +99,9 @@ REVERSE_CHATROOM_RELAY = {}
 # Some XMPP implementations like HipChat are super picky on the fullname you join with for a MUC
 # If you use HipChat, make sure to exactly match the fullname you set for the bot user
 CHATROOM_FN = 'bot'
+
+# DIVERT_TO_PRIVATE
+# An iterable of commands which should be responded to in private, even if the command was given
+# in a MUC. For example: DIVERT_TO_PRIVATE = ('help', 'about', 'status')
+DIVERT_TO_PRIVATE = ()
 

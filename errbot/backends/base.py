@@ -9,7 +9,13 @@ from errbot.utils import get_sender_username, xhtml2txt
 from errbot.templating import tenv
 import traceback
 from errbot.utils import get_jid_from_message, utf8
-from config import BOT_ADMINS, BOT_ASYNC, BOT_PREFIX
+from config import BOT_ADMINS, BOT_ASYNC, BOT_PREFIX, ACCESS_CONTROLS
+try:
+    from config import DIVERT_TO_PRIVATE
+except ImportError:
+    DIVERT_TO_PRIVATE = ()
+    logging.warning("DIVERT_TO_PRIVATE is missing in config")
+    pass
 
 if BOT_ASYNC:
     from errbot.bundled.threadpool import ThreadPool, WorkRequest
@@ -167,7 +173,10 @@ class Backend(object):
         Message is NOT sent"""
         response = self.build_message(text)
         if private:
-            response.setTo(mess.getFrom().getStripped())
+            # Use get_jid_from_message here instead of mess.getFrom because
+            # getFrom will return the groupchat id instead of user's jid when
+            # sent from a chatroom
+            response.setTo(get_jid_from_message(mess))
             response.setType('chat')
             response.setFrom(self.jid)
         else:
@@ -258,15 +267,42 @@ class Backend(object):
                 if reply:
                     if len(reply) > self.MESSAGE_SIZE_LIMIT:
                         reply = reply[:self.MESSAGE_SIZE_LIMIT - len(self.MESSAGE_SIZE_ERROR_MESSAGE)] + self.MESSAGE_SIZE_ERROR_MESSAGE
-                    self.send_simple_reply(mess, reply)
+                    self.send_simple_reply(mess, reply, cmd in DIVERT_TO_PRIVATE)
+
+            # Check access controls
+            usr = get_jid_from_message(mess)
+            typ = mess.getType()
+            if cmd in ACCESS_CONTROLS:
+                if 'allowusers' in ACCESS_CONTROLS[cmd]:
+                    if usr not in ACCESS_CONTROLS[cmd]['allowusers']:
+                        self.send_simple_reply(mess, "You're not allowed to access this command from this user")
+                        return False
+                if 'denyusers' in ACCESS_CONTROLS[cmd]:
+                    if usr in ACCESS_CONTROLS[cmd]['denyusers']:
+                        self.send_simple_reply(mess, "You're not allowed to access this command from this user")
+                        return False
+                if typ == 'groupchat':
+                    stripped = mess.getFrom().getStripped()
+                    if 'allowmuc' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowmuc'] is False:
+                        self.send_simple_reply(mess, "You're not allowed to access this command from a chatroom")
+                        return False
+                    if 'allowrooms' in ACCESS_CONTROLS[cmd] and stripped not in ACCESS_CONTROLS[cmd]['allowrooms']:
+                            self.send_simple_reply(mess, "You're not allowed to access this command from this room")
+                            return False
+                    if 'denyrooms' in ACCESS_CONTROLS[cmd] and stripped in ACCESS_CONTROLS[cmd]['denyrooms']:
+                        self.send_simple_reply(mess, "You're not allowed to access this command from this room")
+                        return False
+                else:
+                    if 'allowprivate' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowprivate'] is False:
+                        self.send_simple_reply(mess, "You're not allowed to access this command via private message to me")
+                        return False
 
             f = self.commands[cmd]
 
             if f._err_command_admin_only:
-                if mess.getType() == 'groupchat':
+                if typ == 'groupchat':
                     self.send_simple_reply(mess, 'You cannot administer the bot from a chatroom, message the bot directly')
                     return False
-                usr = get_jid_from_message(mess)
                 if usr not in BOT_ADMINS:
                     self.send_simple_reply(mess, 'You cannot administer the bot from this user %s.' % usr)
                     return False
@@ -276,7 +312,9 @@ class Backend(object):
             if f._err_command_historize:
                 self.cmd_history.append((cmd, args)) # add it to the history only if it is authorized to be so
 
-            if f._err_command_split_args_with:
+            # Don't check for None here as None can be a valid argument to split.
+            # '' was chosen as default argument because this isn't a valid argument to split()
+            if f._err_command_split_args_with != '':
                 args = args.split(f._err_command_split_args_with)
             if BOT_ASYNC:
                 wr = WorkRequest(execute_and_send, [f._err_command_template]) #execute_and_send(f._err_command_template)
@@ -388,16 +426,6 @@ class Backend(object):
         top = self.top_of_help_message()
         bottom = self.bottom_of_help_message()
         return ''.join(filter(None, [top, description, usage, bottom]))
-
-    @botcmd(historize=False)
-    def history(self, mess, args):
-        """display the command history"""
-        answer = []
-        l = len(self.cmd_history)
-        for i in range(0, l):
-            c = self.cmd_history[i]
-            answer.append('%2i:%s%s %s' % (l - i, BOT_PREFIX, c[0], c[1]))
-        return '\n'.join(answer)
 
     def send(self, user, text, in_reply_to=None, message_type='chat'):
         """Sends a simple message to the specified user."""

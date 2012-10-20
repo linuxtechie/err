@@ -21,7 +21,7 @@ def get_sender_username(mess):
 def get_jid_from_message(mess):
     if mess.getType() == 'chat':
         return str(mess.getFrom().getStripped())
-        # this is a hipchat message from a group so find out from the sender node, for the moment hardcoded because it is not parsed, it could brake in the future
+    # this is a hipchat message from a group so find out from the sender node, for the moment hardcoded because it is not parsed, it could brake in the future
     jid = mess.getTagAttr('delay', 'from_jid')
     if jid:
         logging.debug('found the jid from the delay tag : %s' % jid)
@@ -37,6 +37,13 @@ def get_jid_from_message(mess):
     if jid:
         logging.debug('found the jid from the x/sender tag : %s' % jid)
         return jid
+
+    # If the message is from MUC, return response to MUC
+    if mess.getType() == 'groupchat':
+        jid = mess.getFrom()
+        logging.debug('Message from MUC. Replying to: %s' % jid)
+        return jid
+
     splitted = str(mess.getFrom()).split('/')
     jid = splitted[1] if len(splitted) > 1 else splitted[0] # despair
 
