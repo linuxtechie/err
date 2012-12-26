@@ -5,11 +5,42 @@ from pyexpat import ExpatError
 from xmpp.simplexml import XML2Node
 from errbot import botcmd
 import difflib
-from errbot.utils import get_sender_username, xhtml2txt
+from errbot.utils import get_sender_username, xhtml2txt, get_jid_from_message, utf8, parse_jid
 from errbot.templating import tenv
 import traceback
-from errbot.utils import get_jid_from_message, utf8
-from config import BOT_ADMINS, BOT_ASYNC, BOT_PREFIX, ACCESS_CONTROLS
+
+from config import BOT_ADMINS, BOT_ASYNC, BOT_PREFIX
+
+try:
+    from config import ACCESS_CONTROLS_DEFAULT
+except ImportError:
+    ACCESS_CONTROLS_DEFAULT = {}
+
+try:
+    from config import ACCESS_CONTROLS
+except ImportError:
+    ACCESS_CONTROLS = {}
+
+try:
+    from config import BOT_PREFIX_OPTIONAL_ON_CHAT
+except ImportError:
+    BOT_PREFIX_OPTIONAL_ON_CHAT = False
+
+try:
+    from config import BOT_ALT_PREFIXES
+except ImportError:
+    BOT_ALT_PREFIXES = ()
+
+try:
+    from config import BOT_ALT_PREFIX_SEPARATORS
+except ImportError:
+    BOT_ALT_PREFIX_SEPARATORS = ()
+
+try:
+    from config import BOT_ALT_PREFIX_CASEINSENSITIVE
+except ImportError:
+    BOT_ALT_PREFIX_CASEINSENSITIVE = False
+
 try:
     from config import DIVERT_TO_PRIVATE
 except ImportError:
@@ -20,6 +51,7 @@ except ImportError:
 if BOT_ASYNC:
     from errbot.bundled.threadpool import ThreadPool, WorkRequest
 
+
 class Identifier(object):
     """
     This class is the parent and the basic contract of all the ways the backends are identifying a person on their system
@@ -27,16 +59,7 @@ class Identifier(object):
 
     def __init__(self, jid=None, node='', domain='', resource=''):
         if jid:
-            if jid.find('@') != -1:
-                self.node, self.domain = jid.split('@')[0:2] # hack for IRC
-                if self.domain.find('/') != -1:
-                    self.domain, self.resource = self.domain.split('/')[0:2] # hack for IRC where you can have several slashes here
-                else:
-                    self.resource = self.node # put a default one
-            else:
-                self.node = jid
-                self.resource = None
-                self.domain = None
+            self.node, self.domain, self.resource = parse_jid(jid)
         else:
             self.node = node
             self.domain = domain
@@ -49,18 +72,15 @@ class Identifier(object):
         return self.domain
 
     def bareMatch(self, other):
-        return other.node == self.node
+        return other.getStripped() == self.getStripped()
 
     def getStripped(self):
         if self.domain:
             return self.node + '@' + self.domain
         return self.node # if the backend has no domain notion
 
-
     def getResource(self):
-        if self.resource:
-            return self.resource
-        return self.node # this is because if the backend has no resource notion we need to return the plain identifier
+        return self.resource
 
     def __str__(self):
         answer = self.getStripped()
@@ -76,7 +96,11 @@ class Message(object):
     fr = Identifier('unknown@localhost')
 
     def __init__(self, body, typ='chat', html=None):
-        self.body = body
+        # it is either unicode or assume it is utf-8
+        if isinstance(body, unicode):
+            self.body = body
+        else:
+            self.body = body.decode('utf-8')
         self.html = html
         self.typ = typ
 
@@ -84,7 +108,7 @@ class Message(object):
         if isinstance(to, Identifier):
             self.to = to
         else:
-            self.to = Identifier(to) #assume a parseable string
+            self.to = Identifier(to)  # assume a parseable string
 
     def getTo(self):
         return self.to
@@ -102,7 +126,7 @@ class Message(object):
         if isinstance(fr, Identifier):
             self.fr = fr
         else:
-            self.fr = Identifier(fr) #assume a parseable string
+            self.fr = Identifier(fr)  # assume a parseable string
 
     def getProperties(self):
         return {}
@@ -123,10 +147,59 @@ class Message(object):
     def getTag(self, tag):
         return None
 
+    def addChild(self, name=None, attrs={}, payload=[], namespace=None, node=None):
+        """ If "node" argument is provided, adds it as child node. Else creates new node from
+            the other arguments' values and adds it as well."""
+        if node.name == 'html':
+            self.html = unicode(node)  # assume this is the html node you want to set
+        else:
+            raise TypeError('We only support the custom html node from XMPP')
+        return node
+
+    def __str__(self):
+        return self.body
+
 
 class Connection(object):
     def send_message(self, mess):
         raise NotImplementedError("It should be implemented specifically for your backend")
+
+
+def build_text_html_message_pair(source):
+    node = None
+    text_plain = None
+
+    try:
+        node = XML2Node(source)
+        text_plain = xhtml2txt(source)
+    except ExpatError as ee:
+        if source.strip():  # avoids keep alive pollution
+            logging.debug('Could not parse [%s] as XHTML-IM, assume pure text Parsing error = [%s]' % (source, ee))
+            text_plain = source
+    return text_plain, node
+
+def build_message(text, message_class, conversion_function=None):
+    """Builds an xhtml message without attributes.
+    If input is not valid xhtml-im fallback to normal."""
+    message = None  # keeps the compiler happy
+    try:
+        text = utf8(text)
+
+        text = text.replace('', '*')  # there is a weird chr IRC is sending that we need to filter out
+
+        XML2Node(text)  # test if is it xml
+        edulcorated_html = conversion_function(text) if conversion_function else text
+        try:
+            text_plain, node = build_text_html_message_pair(edulcorated_html)
+            message = message_class(body=text_plain)
+            message.addChild(node=node)
+        except ExpatError as ee:
+            logging.error('Error translating to hipchat [%s] Parsing error = [%s]' % (edulcorated_html, ee))
+    except ExpatError as ee:
+        if text.strip():  # avoids keep alive pollution
+            logging.debug('Determined that [%s] is not XHTML-IM (%s)' % (text, ee))
+        message = message_class(body=text)
+    return message
 
 
 class Backend(object):
@@ -150,20 +223,12 @@ class Backend(object):
         if BOT_ASYNC:
             self.thread_pool = ThreadPool(3)
             logging.debug('created the thread pool' + str(self.thread_pool))
-        self.commands = {} # the dynamically populated list of commands available on the bot
+        self.commands = {}  # the dynamically populated list of commands available on the bot
 
-    def build_text_html_message_pair(self, source):
-        node = None
-        text_plain = None
-
-        try:
-            node = XML2Node(utf8(source))
-            text_plain = xhtml2txt(source)
-        except ExpatError as ee:
-            if source.strip(): # avoids keep alive pollution
-                logging.debug('Could not parse [%s] as XHTML-IM, assume pure text Parsing error = [%s]' % (source, ee))
-                text_plain = source
-        return text_plain, node
+        if BOT_ALT_PREFIX_CASEINSENSITIVE:
+            self.bot_alt_prefixes = tuple(prefix.lower() for prefix in BOT_ALT_PREFIXES)
+        else:
+            self.bot_alt_prefixes = BOT_ALT_PREFIXES
 
 
     def send_message(self, mess):
@@ -216,43 +281,71 @@ class Backend(object):
         # txt will be None
         if not text: return False
 
-        if not text.startswith(BOT_PREFIX):
+        surpress_cmd_not_found = False
+
+        tomatch = text.lower() if BOT_ALT_PREFIX_CASEINSENSITIVE else text
+        if len(BOT_ALT_PREFIXES) > 0 and tomatch.startswith(self.bot_alt_prefixes):
+            # Yay! We were called by one of our alternate prefixes. Now we just have to find out
+            # which one... (And find the longest matching, in case you have 'err' and 'errbot' and
+            # someone uses 'errbot', which also matches 'err' but would leave 'bot' to be taken as
+            # part of the called command in that case)
+            longest = 0
+            for prefix in self.bot_alt_prefixes:
+                l = len(prefix)
+                if tomatch.startswith(prefix) and l > longest:
+                    longest = l
+            text = text[longest:]
+
+            # Now also remove the separator from the text
+            for sep in BOT_ALT_PREFIX_SEPARATORS:
+                # While unlikely, one may have separators consisting of
+                # more than one character
+                l = len(sep)
+                if text[:l] == sep:
+                    text = text[l:]
+        elif type == "chat" and BOT_PREFIX_OPTIONAL_ON_CHAT:
+            logging.debug("Assuming '%s' to be a command because BOT_PREFIX_OPTIONAL_ON_CHAT is True" % text)
+            # In order to keep noise down we surpress messages about the command
+            # not being found, because it's possible a plugin will trigger on what
+            # was said with trigger_message.
+            surpress_cmd_not_found = True
+        elif not text.startswith(BOT_PREFIX):
             return True
+        else:
+            text = text[len(BOT_PREFIX):]
 
-        text = text[1:]
         text_split = text.strip().split(' ')
-
         cmd = None
         command = None
         args = ''
         if len(text_split) > 1:
             command = (text_split[0] + '_' + text_split[1]).lower()
-            if self.commands.has_key(command):
+            if command in self.commands:
                 cmd = command
                 args = ' '.join(text_split[2:])
 
         if not cmd:
             command = text_split[0].lower()
             args = ' '.join(text_split[1:])
-            if self.commands.has_key(command):
+            if command in self.commands:
                 cmd = command
                 if len(text_split) > 1:
                     args = ' '.join(text_split[1:])
 
-        if command == BOT_PREFIX: # we did "!!" so recall the last command
+        if command == BOT_PREFIX:  # we did "!!" so recall the last command
             if len(self.cmd_history):
                 cmd, args = self.cmd_history[-1]
             else:
-                return False # no command in history
-        elif command.isdigit(): # we did "!#" so we recall the specified command
+                return False  # no command in history
+        elif command.isdigit():  # we did "!#" so we recall the specified command
             index = int(command)
             if len(self.cmd_history) >= index:
                 cmd, args = self.cmd_history[-index]
             else:
-                return False # no command in history
+                return False  # no command in history
 
         if (cmd, args) in self.cmd_history:
-            self.cmd_history.remove((cmd, args)) # we readd it below
+            self.cmd_history.remove((cmd, args))  # we readd it below
 
         logging.info("received command = %s matching [%s] with parameters [%s]" % (command, cmd, args))
 
@@ -265,8 +358,10 @@ class Backend(object):
                     if template_name:
                         reply = tenv().get_template(template_name + '.html').render(**reply)
 
+                    # Reply should be all text at this point (See https://github.com/gbin/err/issues/96)
+                    reply = unicode(reply)
                 except Exception, e:
-                    logging.exception(u'An error happened while processing '\
+                    logging.exception(u'An error happened while processing '
                                       u'a message ("%s") from %s: %s"' %
                                       (text, jid, traceback.format_exc(e)))
                     reply = self.MSG_ERROR_OCCURRED + ':\n %s' % e
@@ -275,33 +370,32 @@ class Backend(object):
                         reply = reply[:self.MESSAGE_SIZE_LIMIT - len(self.MESSAGE_SIZE_ERROR_MESSAGE)] + self.MESSAGE_SIZE_ERROR_MESSAGE
                     self.send_simple_reply(mess, reply, cmd in DIVERT_TO_PRIVATE)
 
-            # Check access controls
-            usr = get_jid_from_message(mess)
+            usr = str(get_jid_from_message(mess))
             typ = mess.getType()
-            if cmd in ACCESS_CONTROLS:
-                if 'allowusers' in ACCESS_CONTROLS[cmd]:
-                    if usr not in ACCESS_CONTROLS[cmd]['allowusers']:
-                        self.send_simple_reply(mess, "You're not allowed to access this command from this user")
-                        return False
-                if 'denyusers' in ACCESS_CONTROLS[cmd]:
-                    if usr in ACCESS_CONTROLS[cmd]['denyusers']:
-                        self.send_simple_reply(mess, "You're not allowed to access this command from this user")
-                        return False
-                if typ == 'groupchat':
-                    stripped = mess.getFrom().getStripped()
-                    if 'allowmuc' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowmuc'] is False:
-                        self.send_simple_reply(mess, "You're not allowed to access this command from a chatroom")
-                        return False
-                    if 'allowrooms' in ACCESS_CONTROLS[cmd] and stripped not in ACCESS_CONTROLS[cmd]['allowrooms']:
-                            self.send_simple_reply(mess, "You're not allowed to access this command from this room")
-                            return False
-                    if 'denyrooms' in ACCESS_CONTROLS[cmd] and stripped in ACCESS_CONTROLS[cmd]['denyrooms']:
-                        self.send_simple_reply(mess, "You're not allowed to access this command from this room")
-                        return False
-                else:
-                    if 'allowprivate' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowprivate'] is False:
-                        self.send_simple_reply(mess, "You're not allowed to access this command via private message to me")
-                        return False
+            if cmd not in ACCESS_CONTROLS:
+                ACCESS_CONTROLS[cmd] = ACCESS_CONTROLS_DEFAULT
+
+            if 'allowusers' in ACCESS_CONTROLS[cmd] and usr not in ACCESS_CONTROLS[cmd]['allowusers']:
+                self.send_simple_reply(mess, "You're not allowed to access this command from this user")
+                return False
+            if 'denyusers' in ACCESS_CONTROLS[cmd] and usr in ACCESS_CONTROLS[cmd]['denyusers']:
+                self.send_simple_reply(mess, "You're not allowed to access this command from this user")
+                return False
+            if typ == 'groupchat':
+                stripped = mess.getFrom().getStripped()
+                if 'allowmuc' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowmuc'] is False:
+                    self.send_simple_reply(mess, "You're not allowed to access this command from a chatroom")
+                    return False
+                if 'allowrooms' in ACCESS_CONTROLS[cmd] and stripped not in ACCESS_CONTROLS[cmd]['allowrooms']:
+                    self.send_simple_reply(mess, "You're not allowed to access this command from this room")
+                    return False
+                if 'denyrooms' in ACCESS_CONTROLS[cmd] and stripped in ACCESS_CONTROLS[cmd]['denyrooms']:
+                    self.send_simple_reply(mess, "You're not allowed to access this command from this room")
+                    return False
+            else:
+                if 'allowprivate' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowprivate'] is False:
+                    self.send_simple_reply(mess, "You're not allowed to access this command via private message to me")
+                    return False
 
             f = self.commands[cmd]
 
@@ -331,14 +425,15 @@ class Backend(object):
                 execute_and_send(f._err_command_template)
 
         else:
-            # In private chat, it's okay for the bot to always respond.
-            # In group chat, the bot should silently ignore commands it
-            # doesn't understand or aren't handled by unknown_command().
-            reply = self.unknown_command(mess, command, args)
-            if reply is None:
-                reply = self.MSG_UNKNOWN_COMMAND % {'command': command}
-            if reply:
-                self.send_simple_reply(mess, reply)
+            logging.debug("Command not found")
+            if surpress_cmd_not_found:
+                logging.debug("Surpressing command not found feedback")
+            else:
+                reply = self.unknown_command(mess, command, args)
+                if reply is None:
+                    reply = self.MSG_UNKNOWN_COMMAND % {'command': command}
+                if reply:
+                    self.send_simple_reply(mess, reply)
 
         return True
 
@@ -378,7 +473,7 @@ class Backend(object):
         for name, value in inspect.getmembers(instance_to_inject, inspect.ismethod):
             if getattr(value, '_err_command', False):
                 name = getattr(value, '_err_command_name')
-                del(self.commands[name])
+                del (self.commands[name])
 
     def warn_admins(self, warning):
         for admin in BOT_ADMINS:
@@ -415,7 +510,7 @@ class Backend(object):
 
             usage = '\n'.join(sorted([
             BOT_PREFIX + '%s: %s' % (name, (command.__doc__ or
-                                '(undocumented)').strip().split('\n', 1)[0])
+                                            '(undocumented)').strip().split('\n', 1)[0])
             for (name, command) in self.commands.iteritems()\
             if name != 'help'\
             and not command._err_command_hidden
