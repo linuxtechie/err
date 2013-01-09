@@ -90,6 +90,10 @@ Python 2.7.x
 And those python modules. The copy-paste for the lazy pip users but if you can have them from your standard distro it is better::
 
     pip install -r requirements.txt
+   
+If pip command is not available then on debian the same can be installed via : apt-get install python-pip.
+
+If some existing libraries are incompatible or non working, then they can be upgraded via: pip install --upgrade -r requirements.txt
 
 Create a user for the bot in your XMPP server admin.
 
